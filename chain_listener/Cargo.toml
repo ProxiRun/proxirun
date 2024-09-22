@@ -1,0 +1,30 @@
+[package]
+name = "chain_listener"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aptos-protos={workspace=true}
+rayon = "1.10.0"
+serde = { workspace=true, features = ["derive"] }
+serde_json = { workspace=true }
+tokio = { workspace=true, features = ["full"] }
+tokio-stream = "0.1.16"
+tonic = { version = "0.11.0", features = [
+    "tls-roots",
+    "transport",
+    "prost",
+    "gzip",
+    "codegen",
+    "zstd",
+] }
+proxirun-sdk = {path="../proxirun-sdk"}
+reqwest = { version = "0.12.0", features = ["json"] }
+aptos-sdk = {workspace=true}
+rand = "0.7.3"
+rand_core = "0.5.1"
+
+
+
+
+

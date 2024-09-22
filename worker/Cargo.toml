@@ -1,0 +1,18 @@
+[package]
+name = "worker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chain_listener = {path="../chain_listener"}
+aptos-protos={workspace=true}
+rayon = "1.10.0"
+serde = { workspace=true, features = ["derive"] }
+serde_json = { workspace=true }
+tokio = { workspace=true, features = ["full"] }
+proxirun-sdk = {path="../proxirun-sdk"}
+reqwest = { version = "0.12.0", features = ["json"] }
+aptos-sdk = {workspace=true}
+rand = "0.7.3"
+dotenv = {workspace=true}
+
