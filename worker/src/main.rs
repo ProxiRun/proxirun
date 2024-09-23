@@ -10,7 +10,7 @@ use tokio::task::JoinSet;
 
 use chain_listener::events_listener::run_listener;
 use proxirun_sdk::events::{ContractEvent, OnBidWon, OnNewWorkRequest};
-use proxirun_sdk::orchestrator::{TaskDefinition, TextGenerationSettings};
+use proxirun_sdk::orchestrator::{TaskDefinition, TaskPayload, TextGenerationSettings};
 
 use dotenv::dotenv;
 
@@ -37,19 +37,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = OsRng::default();
     let account = LocalAccount::generate(&mut rng);
     let account_address = account.address();
-    println!("account address: {:?}", account);
+
+    println!("Starting worker with address: {}", account_address.to_string());
+    println!("Funding testnet account");
 
     faucet_client
         .fund(account.address(), 100_000_000)
         .await
         .unwrap();
 
-    // check balance
-    let balance_res = rest_client
-        .get_account_balance(account.address())
-        .await
-        .unwrap();
-    println!("account balance: {:?}", balance_res);
 
     let mut task_set = JoinSet::new();
 
@@ -66,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // start the service to handle new work requests
     let clone = task_records.clone();
+    let cloned_url = full_orchestrator_url.clone();
     task_set.spawn(async move {
         while let Some(req) = receiver_new_work_request.recv().await {
             println!("New auction with request_id: {}", req.request_id);
@@ -73,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // fetch work details from server
             let target_url = format!(
                 "{}/{}/{}",
-                full_orchestrator_url, "request-details", req.request_id
+                cloned_url, "request-details", req.request_id
             );
             let res = reqwest::get(target_url).await.unwrap();
             let deets: TaskDefinition = res.json().await.unwrap();
@@ -87,11 +84,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // bid in all cases
             // choose a random price
+            let chosen_price = rng.gen_range(1, req.max_price);
+            println!("Bidding on request {} with price of: {} APT", req.request_id, (chosen_price as f64) * 10_f64.powi(-8));
 
             // and send tx
-            //let price = rng.gen_range(1, req.)
             let res =
-                proxirun_sdk::contract_interact::bid(req.request_id, 10, &account, &rest_client)
+                proxirun_sdk::contract_interact::bid(req.request_id, chosen_price, &account, &rest_client)
                     .await
                     .unwrap();
         }
@@ -100,6 +98,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // start the service to handle tasks when bids are won
     let clone = task_records.clone();
     task_set.spawn(async move {
+        let task_payload_base_url = format!(
+            "{}/{}/",
+            &full_orchestrator_url, "request-payload"
+        );
         while let Some(req) = receiver_on_bid_won.recv().await {
             // check if is winner of the auction
             if req.winner != account_address.to_string() {
@@ -107,18 +109,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             println!("Won auction with request_id: {}", req.request_id);
-            let deets = {
+            let task_definition = {
                 let lock = clone.lock().await;
                 lock.get(&req.request_id).unwrap().to_owned()
             };
 
             // need to query the payloads for generation
+            let task_payload_target_url = format!("{}{}", task_payload_base_url, req.request_id);
+            let res = reqwest::get(task_payload_target_url).await.unwrap();
+            let task_payload: TaskPayload = res.json().await.unwrap();
 
             // then process the work
             tokio::spawn(async move {
-                // do the work
+                // do the work then submit to orchestrator
+                match task_definition {
+                    TaskDefinition::TextGeneration(task_def) => {
+                        if let TaskPayload::TextGeneration(payload) = task_payload {
 
-                // and submit
+                        } else {
+                            println!("Mismatch between task definition and task payload for request {}", req.request_id);
+                        }
+                    }
+                    TaskDefinition::ImageGeneration(task_def) => {
+                        if let TaskPayload::ImageGeneration(payload) = task_payload {
+
+                        } else {
+                            println!("Mismatch between task definition and task payload for request {}", req.request_id);
+                        }
+                        
+                    }
+                    TaskDefinition::VoiceGeneration(task_def) => {
+                        if let TaskPayload::VoiceGeneration(payload) = task_payload {
+
+                        } else {
+                            println!("Mismatch between task definition and task payload for request {}", req.request_id);
+                        }
+                        
+                    }
+                }
             });
         }
     });

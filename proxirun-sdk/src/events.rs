@@ -22,6 +22,8 @@ pub struct OnNewWorkRequest {
     pub request_id: u64,
     pub requester: String,
     #[serde(with = "string_to_u64")]
+    pub max_price: u64,
+    #[serde(with = "string_to_u64")]
     pub time_limit: u64,
 }
 

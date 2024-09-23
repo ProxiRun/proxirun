@@ -7,8 +7,8 @@ use aptos_sdk::types::account_address::AccountAddress;
 
 
 
-const _CONTRACT_ADDRESS: &'static str = "0xd0aaa17cc5072d219a23a3b51cc83052a2ec80746cf34cf15c57dd518af2d54";
-const _CONTRACT_MODULE: &'static str = "my_auction";
+const _CONTRACT_ADDRESS: &'static str = "0x9476528b38675eaf7fcc4d18c9472f22efd24532cad25a27794c6f7300df06cc";
+const _CONTRACT_MODULE: &'static str = "proxirun";
 
 pub const CONTRACT_ADDRESS: Lazy<AccountAddress> = Lazy::new(|| {
     AccountAddress::from_str(&_CONTRACT_ADDRESS).unwrap()
