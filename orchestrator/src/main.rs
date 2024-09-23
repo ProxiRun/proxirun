@@ -20,9 +20,8 @@ use dotenv::dotenv;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
 use tokio::io::AsyncWriteExt;
-use tokio::time::{sleep_until, Instant};
+use tokio::time::{sleep, sleep_until, Instant};
 use tokio_stream::StreamExt;
-
 
 const INDEXER_URL: &'static str = "https://grpc.testnet.aptoslabs.com";
 const TESTNET_NODE: &'static str = "https://fullnode.testnet.aptoslabs.com";
@@ -35,111 +34,128 @@ struct RequestDataDb {
     pub task_type: String,
     pub data: String,
     pub model: String,
-    pub requester: String
+    pub requester: String,
 }
 
 #[derive(Clone)]
 pub struct AppState {
     pub wallet: Arc<LocalAccount>,
     pub rest_client: Arc<Client>, // Mutex for concurrent access
-    pub db_pool: Pool<Postgres>
+    pub db_pool: Pool<Postgres>,
 }
 
 #[get("/request-details/{id}")]
 async fn request_details(id: web::Path<u64>, app_state: web::Data<AppState>) -> impl Responder {
-    let data = sqlx::query_as::<_, RequestDataDb>("SELECT * from payloads where request_id=$1;")
-        .bind(*id as i64)
-        .fetch_one(&app_state.db_pool)
-        .await
-        .unwrap();
+    let mut data = None;
+    let mut try_id: usize = 0;
+    let max_retries: usize = 5;
+    let mut delay = Duration::from_millis(100); // Initial delay
 
-        match data.task_type.as_str() {
-            "Text Generation" => {
-                return Ok::<HttpResponse, actix_web::Error>(
-                    HttpResponse::Ok().json(
-                        &TaskDefinition::TextGeneration(TextGenerationSettings {
-                            model: data.model
-                        })
-                    )
-                );
+    while data.is_none() && try_id < max_retries {
+        data =
+            match sqlx::query_as::<_, RequestDataDb>("SELECT * from payloads where request_id=$1;")
+                .bind(*id as i64)
+                .fetch_one(&app_state.db_pool)
+                .await
+            {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    try_id += 1;
+                    if try_id < max_retries {
+                        sleep(delay).await;
+                        delay = delay * 2;
+                    }
+                    None
+                }
             }
-            "Image Generation" => {
-                return Ok::<HttpResponse, actix_web::Error>(
-                    HttpResponse::Ok().json(
-                        &TaskDefinition::ImageGeneration(ImageGenerationSettings {
-                            model: data.model
-                        })
-                    )
-                );
-            }
-            "Voice Generation" => {
-                return Ok::<HttpResponse, actix_web::Error>(
-                    HttpResponse::Ok().json(
-                        &TaskDefinition::VoiceGeneration(VoiceGenerationSettings {
-                            model: data.model
-                        })
-                    )
-                );
-            },
-            _ => { 
-                // invalid task type, shouldn't happen
-                return Ok::<HttpResponse, actix_web::Error>(
-                    HttpResponse::new(StatusCode::EXPECTATION_FAILED)
-                );
-            }
+    }
+
+    let data = match data {
+        Some(d) => d,
+        None => return Ok::<HttpResponse, actix_web::Error>(HttpResponse::new(
+            StatusCode::NOT_FOUND,
+        ))
+    };
+
+    match data.task_type.as_str() {
+        "Text Generation" => {
+            return Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok().json(
+                &TaskDefinition::TextGeneration(TextGenerationSettings { model: data.model }),
+            ));
         }
+        "Image Generation" => {
+            return Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok().json(
+                &TaskDefinition::ImageGeneration(ImageGenerationSettings { model: data.model }),
+            ));
+        }
+        "Voice Generation" => {
+            return Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok().json(
+                &TaskDefinition::VoiceGeneration(VoiceGenerationSettings { model: data.model }),
+            ));
+        }
+        _ => {
+            // invalid task type, shouldn't happen
+            return Ok::<HttpResponse, actix_web::Error>(HttpResponse::new(
+                StatusCode::EXPECTATION_FAILED,
+            ));
+        }
+    }
 }
 
 #[get("/request-payload/{id}")]
 async fn request_payload(id: web::Path<u64>, app_state: web::Data<AppState>) -> impl Responder {
-    let data = sqlx::query_as::<_, RequestDataDb>("SELECT * from payloads where request_id = $1;")
-        .bind(*id as i64)
-        .fetch_one(&app_state.db_pool)
-        .await
-        .unwrap();
+    let mut data = None;
+    let mut try_id: usize = 0;
+    let max_retries: usize = 5;
+    let mut delay = Duration::from_millis(100); // Initial delay
+
+    while data.is_none() && try_id < max_retries {
+        data =
+            match sqlx::query_as::<_, RequestDataDb>("SELECT * from payloads where request_id = $1;")
+            .bind(*id as i64)
+            .fetch_one(&app_state.db_pool)
+            .await
+            {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    try_id += 1;
+                    if try_id < max_retries {
+                        sleep(delay).await;
+                        delay = delay * 2;
+                    }
+                    None
+                }
+            }
+    }
+
+    let data = match data {
+        Some(d) => d,
+        None => return Ok::<HttpResponse, actix_web::Error>(HttpResponse::new(
+            StatusCode::NOT_FOUND,
+        ))
+    };
 
     match data.task_type.as_str() {
         "Text Generation" => {
-            return Ok::<HttpResponse, actix_web::Error>(
-                HttpResponse::Ok().json(
-                    &TaskPayload::TextGeneration(
-                        serde_json::from_str(
-                            &data.data
-                        ).unwrap()
-
-                    )
-                )
-            );
+            return Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok().json(
+                &TaskPayload::TextGeneration(serde_json::from_str(&data.data).unwrap()),
+            ));
         }
         "Image Generation" => {
-            return Ok::<HttpResponse, actix_web::Error>(
-                HttpResponse::Ok().json(
-                    &TaskPayload::VoiceGeneration(
-                        serde_json::from_str(
-                            &data.data
-                        ).unwrap()
-
-                    )
-                )
-            );
+            return Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok().json(
+                &TaskPayload::ImageGeneration(serde_json::from_str(&data.data).unwrap()),
+            ));
         }
         "Voice Generation" => {
-            return Ok::<HttpResponse, actix_web::Error>(
-                HttpResponse::Ok().json(
-                    &TaskPayload::VoiceGeneration(
-                        serde_json::from_str(
-                            &data.data
-                        ).unwrap()
-
-                    )
-                )
-            );
-        },
-        _ => { 
+            return Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok().json(
+                &TaskPayload::VoiceGeneration(serde_json::from_str(&data.data).unwrap()),
+            ));
+        }
+        _ => {
             // invalid task type, shouldn't happen
-            return Ok::<HttpResponse, actix_web::Error>(
-                HttpResponse::new(StatusCode::EXPECTATION_FAILED)
-            );
+            return Ok::<HttpResponse, actix_web::Error>(HttpResponse::new(
+                StatusCode::EXPECTATION_FAILED,
+            ));
         }
     }
 
@@ -173,9 +189,7 @@ async fn submit_text(
 
     println!("Request {}: Received commit", *id);
 
-    Ok::<HttpResponse, actix_web::Error>(
-        HttpResponse::Ok().body("Submission saved successfully"),
-    )
+    Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok().body("Submission saved successfully"))
 }
 
 #[post("/submit-image/{id}")]
@@ -213,11 +227,8 @@ async fn submit_image(
 
     println!("Request {}: Received commit", *id);
 
-    Ok::<HttpResponse, actix_web::Error>(
-        HttpResponse::Ok().body("Submission saved successfully"),
-    )
+    Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok().body("Submission saved successfully"))
 }
-
 
 #[post("/submit-voice/{id}")]
 async fn submit_voice(
@@ -254,11 +265,8 @@ async fn submit_voice(
 
     println!("Request {}: Received commit", *id);
 
-    Ok::<HttpResponse, actix_web::Error>(
-        HttpResponse::Ok().body("Submission saved successfully"),
-    )
+    Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok().body("Submission saved successfully"))
 }
-
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -267,20 +275,21 @@ async fn main() -> std::io::Result<()> {
     let admin_priv_key =
         std::env::var("ADMIN_PRIVATE_KEY").expect("ADMIN_PRIVATE_KEY must be set.");
 
-    let orchestrator_url = std::env::var("ORCHESTRATOR_URL").expect("ORCHESTRATOR_URL must be set.");
-    let orchestrator_port = std::env::var("ORCHESTRATOR_PORT").expect("ORCHESTRATOR_PORT must be set.");
+    let orchestrator_url =
+        std::env::var("ORCHESTRATOR_URL").expect("ORCHESTRATOR_URL must be set.");
+    let orchestrator_port =
+        std::env::var("ORCHESTRATOR_PORT").expect("ORCHESTRATOR_PORT must be set.");
     let db_url = std::env::var("DB_URL").expect("DB_URL must be set.");
 
     // make sure that the uploads folder exists
     fs::create_dir_all("./uploads")?;
 
-    // connect to db 
+    // connect to db
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&db_url)
         .await
         .unwrap();
-
 
     let account = Arc::new(LocalAccount::from_private_key(&admin_priv_key, 0).unwrap());
     let rest_client = Arc::new(Client::new(TESTNET_NODE.parse().unwrap()));
@@ -308,7 +317,10 @@ async fn main() -> std::io::Result<()> {
         while let Some(e) = receiver_events.recv().await {
             match e {
                 ContractEvent::OnNewWorkRequest(new_work_request) => {
-                    println!("Request {}: Scheduling auction finalization", new_work_request.request_id);
+                    println!(
+                        "Request {}: Scheduling auction finalization",
+                        new_work_request.request_id
+                    );
                     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
                     let now_as_instant = Instant::now();
                     let target_time = now_as_instant
@@ -321,7 +333,10 @@ async fn main() -> std::io::Result<()> {
                         // Calculate the target time as an Instant
                         sleep_until(target_time).await;
 
-                        println!("Request {}: Sending finalization", new_work_request.request_id);
+                        println!(
+                            "Request {}: Sending finalization",
+                            new_work_request.request_id
+                        );
                         // notify the blockchain client to finalize the auction
                         finalize_auction(new_work_request.request_id, &task_account, &task_client)
                             .await
@@ -337,7 +352,7 @@ async fn main() -> std::io::Result<()> {
     let app_state = web::Data::new(AppState {
         wallet: account.clone(),
         rest_client: rest_client.clone(),
-        db_pool: pool
+        db_pool: pool,
     });
 
     HttpServer::new(move || {

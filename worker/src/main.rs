@@ -74,6 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             let res = reqwest::get(target_url).await.unwrap();
             let deets: TaskDefinition = res.json().await.unwrap();
+
             //let deets = TaskDefinition::TextGeneration(TextGenerationSettings {});
 
             // and save work details to the task_records set
