@@ -7,6 +7,7 @@ edition = "2021"
 actix-web = "4.9.0"
 tokio = { workspace=true}
 proxirun-sdk = {path="../proxirun-sdk"}
+serde = {workspace=true, features=["derive"]}
 serde_json = { workspace=true}
 aptos-sdk = { workspace=true}
 bcs = {workspace=true}
@@ -20,3 +21,4 @@ postgres = "0.19.7"
 postgres-types = "0.2.6"
 tokio-postgres = "0.7.10"
 sqlx = { version = "0.7", features = [ "runtime-tokio", "postgres" ] }
+actix-files = "0.6"

@@ -2,12 +2,13 @@ use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use actix_files::NamedFile;
 use actix_multipart::Multipart;
 use actix_web::http::StatusCode;
-use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{get, post, web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use aptos_sdk::{rest_client::Client, types::LocalAccount};
 use chain_listener::events_listener::run_listener;
-use proxirun_sdk::constants::{CONTRACT_ADDRESS, CONTRACT_MODULE, MODULE_IDENTIFIER};
+use proxirun_sdk::constants::CONTRACT_MODULE;
 use proxirun_sdk::contract_interact::commit;
 use proxirun_sdk::orchestrator::{ImageGenerationSettings, VoiceGenerationSettings};
 use proxirun_sdk::{
@@ -17,6 +18,7 @@ use proxirun_sdk::{
 };
 
 use dotenv::dotenv;
+use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
 use tokio::io::AsyncWriteExt;
@@ -35,6 +37,12 @@ struct RequestDataDb {
     pub data: String,
     pub model: String,
     pub requester: String,
+}
+
+#[derive(sqlx::FromRow, Serialize)]
+struct TextCompletionDb {
+    pub request_id: i64,
+    pub content: String,
 }
 
 #[derive(Clone)]
@@ -72,9 +80,9 @@ async fn request_details(id: web::Path<u64>, app_state: web::Data<AppState>) -> 
 
     let data = match data {
         Some(d) => d,
-        None => return Ok::<HttpResponse, actix_web::Error>(HttpResponse::new(
-            StatusCode::NOT_FOUND,
-        ))
+        None => {
+            return Ok::<HttpResponse, actix_web::Error>(HttpResponse::new(StatusCode::NOT_FOUND))
+        }
     };
 
     match data.task_type.as_str() {
@@ -110,29 +118,30 @@ async fn request_payload(id: web::Path<u64>, app_state: web::Data<AppState>) -> 
     let mut delay = Duration::from_millis(100); // Initial delay
 
     while data.is_none() && try_id < max_retries {
-        data =
-            match sqlx::query_as::<_, RequestDataDb>("SELECT * from payloads where request_id = $1;")
-            .bind(*id as i64)
-            .fetch_one(&app_state.db_pool)
-            .await
-            {
-                Ok(val) => Some(val),
-                Err(_) => {
-                    try_id += 1;
-                    if try_id < max_retries {
-                        sleep(delay).await;
-                        delay = delay * 2;
-                    }
-                    None
+        data = match sqlx::query_as::<_, RequestDataDb>(
+            "SELECT * from payloads where request_id = $1;",
+        )
+        .bind(*id as i64)
+        .fetch_one(&app_state.db_pool)
+        .await
+        {
+            Ok(val) => Some(val),
+            Err(_) => {
+                try_id += 1;
+                if try_id < max_retries {
+                    sleep(delay).await;
+                    delay = delay * 2;
                 }
+                None
             }
+        }
     }
 
     let data = match data {
         Some(d) => d,
-        None => return Ok::<HttpResponse, actix_web::Error>(HttpResponse::new(
-            StatusCode::NOT_FOUND,
-        ))
+        None => {
+            return Ok::<HttpResponse, actix_web::Error>(HttpResponse::new(StatusCode::NOT_FOUND))
+        }
     };
 
     match data.task_type.as_str() {
@@ -268,6 +277,86 @@ async fn submit_voice(
     Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok().body("Submission saved successfully"))
 }
 
+
+#[get("/output/{id}")]
+async fn get_output(
+    id: web::Path<u64>,
+    app_state: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let mut data = None;
+    let mut try_id: usize = 0;
+    let max_retries: usize = 3;
+    let mut delay = Duration::from_millis(100); // Initial delay
+
+    while data.is_none() && try_id < max_retries {
+        data =
+            match sqlx::query_as::<_, RequestDataDb>("SELECT * from payloads where request_id=$1;")
+                .bind(*id as i64)
+                .fetch_one(&app_state.db_pool)
+                .await
+            {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    try_id += 1;
+                    if try_id < max_retries {
+                        sleep(delay).await;
+                        delay = delay * 2;
+                    }
+                    None
+                }
+            }
+    }
+
+    let data = match data {
+        Some(d) => d,
+        None => {
+            return Ok::<HttpResponse, actix_web::Error>(HttpResponse::new(StatusCode::NOT_FOUND))
+        }
+    };
+
+    match data.task_type.as_str() {
+        "Text Generation" => {
+            // query from db
+            match sqlx::query_as::<_, TextCompletionDb>(
+                "SELECT * from text_completions where request_id=$1;",
+            )
+            .bind(*id as i64)
+            .fetch_one(&app_state.db_pool)
+            .await
+            {
+                Ok(val) => {
+                    return Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok()
+                        .content_type("application/json")
+                        .json(val));
+                }
+                Err(_) => {
+                    return Ok::<HttpResponse, actix_web::Error>(HttpResponse::new(
+                        StatusCode::NOT_FOUND,
+                    ));
+                }
+            }
+        }
+        "Image Generation" => {
+            // send file
+            let file_path = format!("./uploads/{}.jpg", *id);
+            return Ok(NamedFile::open(file_path).unwrap().into_response(&req));
+        }
+        "Voice Generation" => {
+            // send file
+            let file_path = format!("./uploads/{}.wav", *id);
+            return Ok(NamedFile::open(file_path).unwrap().into_response(&req));
+        }
+        _ => {
+            println!("Unexpected");
+            // invalid task type, shouldn't happen
+            return Ok::<HttpResponse, actix_web::Error>(HttpResponse::new(
+                StatusCode::EXPECTATION_FAILED,
+            ));
+        }
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
@@ -280,6 +369,9 @@ async fn main() -> std::io::Result<()> {
     let orchestrator_port =
         std::env::var("ORCHESTRATOR_PORT").expect("ORCHESTRATOR_PORT must be set.");
     let db_url = std::env::var("DB_URL").expect("DB_URL must be set.");
+
+    println!("Starting orchestrator on port: {}", orchestrator_port);
+
 
     // make sure that the uploads folder exists
     fs::create_dir_all("./uploads")?;
@@ -363,6 +455,7 @@ async fn main() -> std::io::Result<()> {
             .service(submit_text)
             .service(submit_image)
             .service(submit_voice)
+            .service(get_output)
     })
     .bind(("127.0.0.1", orchestrator_port.parse().unwrap()))?
     .run()

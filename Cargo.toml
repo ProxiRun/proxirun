@@ -1,5 +1,5 @@
 [workspace]
-members=["chain_listener", "orchestrator", "proxirun-sdk", "worker"]
+members=["chain_listener", "dev", "orchestrator", "proxirun-sdk", "worker"]
 
 resolver = "2"
 
