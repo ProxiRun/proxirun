@@ -6,6 +6,7 @@ use actix_files::NamedFile;
 use actix_multipart::Multipart;
 use actix_web::http::StatusCode;
 use actix_web::{get, post, web, App, HttpRequest, HttpResponse, HttpServer, Responder};
+use aptos_sdk::rest_client::Transaction;
 use aptos_sdk::{rest_client::Client, types::LocalAccount};
 use chain_listener::events_listener::run_listener;
 use proxirun_sdk::constants::CONTRACT_MODULE;
@@ -17,6 +18,7 @@ use proxirun_sdk::{
     orchestrator::{TaskDefinition, TaskPayload, TextGenerationPayload, TextGenerationSettings},
 };
 
+use actix_cors::Cors;
 use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
@@ -167,14 +169,6 @@ async fn request_payload(id: web::Path<u64>, app_state: web::Data<AppState>) -> 
             ));
         }
     }
-
-    /*
-    return serde_json::to_string(&TaskPayload::TextGeneration(TextGenerationPayload {
-        system_prompt: "You are a helpful assistant".into(),
-        user_prompt: "What is the best kind of pasta? I usually only eat spaghettis".into(),
-    }))
-    .unwrap();
-    */
 }
 
 #[post("/submit-text/{id}")]
@@ -254,7 +248,7 @@ async fn submit_voice(
             Err(e) => return Err(actix_web::error::ErrorBadRequest(e.to_string())),
         };
 
-        if field.name() == Some("audio") {
+        if field.name() == Some("file") {
             // Write the file content to the file
             while let Some(chunk) = field.next().await {
                 let chunk = match chunk {
@@ -276,7 +270,6 @@ async fn submit_voice(
 
     Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok().body("Submission saved successfully"))
 }
-
 
 #[get("/output/{id}")]
 async fn get_output(
@@ -326,9 +319,11 @@ async fn get_output(
             .await
             {
                 Ok(val) => {
-                    return Ok::<HttpResponse, actix_web::Error>(HttpResponse::Ok()
-                        .content_type("application/json")
-                        .json(val));
+                    return Ok::<HttpResponse, actix_web::Error>(
+                        HttpResponse::Ok()
+                            .content_type("application/json")
+                            .json(val),
+                    );
                 }
                 Err(_) => {
                     return Ok::<HttpResponse, actix_web::Error>(HttpResponse::new(
@@ -372,7 +367,6 @@ async fn main() -> std::io::Result<()> {
 
     println!("Starting orchestrator on port: {}", orchestrator_port);
 
-
     // make sure that the uploads folder exists
     fs::create_dir_all("./uploads")?;
 
@@ -385,7 +379,7 @@ async fn main() -> std::io::Result<()> {
 
     let account = Arc::new(LocalAccount::from_private_key(&admin_priv_key, 0).unwrap());
     let rest_client = Arc::new(Client::new(TESTNET_NODE.parse().unwrap()));
-
+    
     let res = rest_client.get_account(account.address()).await.unwrap();
     account.set_sequence_number(res.inner().sequence_number);
 
@@ -407,36 +401,91 @@ async fn main() -> std::io::Result<()> {
     let temp_rest_client = rest_client.clone();
     tokio::spawn(async move {
         while let Some(e) = receiver_events.recv().await {
-            match e {
-                ContractEvent::OnNewWorkRequest(new_work_request) => {
+            if let ContractEvent::OnNewWorkRequest(new_work_request) = e {
+                println!(
+                    "Request {}: Scheduling auction finalization",
+                    new_work_request.request_id
+                );
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                let now_as_instant = Instant::now();
+                let target_time = now_as_instant
+                    + Duration::from_micros(new_work_request.time_limit + DELTA_TIME)
+                    - now;
+
+                let task_account = temp_account.clone();
+                let task_client = temp_rest_client.clone();
+                tokio::spawn(async move {
+                    // Calculate the target time as an Instant
+                    sleep_until(target_time).await;
+
                     println!(
-                        "Request {}: Scheduling auction finalization",
+                        "Request {}: Sending finalization",
                         new_work_request.request_id
                     );
-                    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                    let now_as_instant = Instant::now();
-                    let target_time = now_as_instant
-                        + Duration::from_micros(new_work_request.time_limit + DELTA_TIME)
-                        - now;
 
-                    let task_account = temp_account.clone();
-                    let task_client = temp_rest_client.clone();
-                    tokio::spawn(async move {
-                        // Calculate the target time as an Instant
-                        sleep_until(target_time).await;
+                    let mut finalization_successful = false;
+                    let max_try = 5;
+                    let mut curr_try = 0;
+                    while !finalization_successful && curr_try < max_try {
+                        let finalization_res = match finalize_auction(
+                            new_work_request.request_id,
+                            &task_account,
+                            &task_client,
+                        )
+                        .await
+                        {
+                            Ok(tx) => tx,
+                            Err(_e) => {
+                                // tx failed, possibly due to invalid sequence number
+                                let res = task_client.get_account(task_account.address()).await.unwrap();
+                                task_account.set_sequence_number(res.inner().sequence_number);
+                                curr_try += 1;
+                                continue;
+                            }
+                        };
 
-                        println!(
-                            "Request {}: Sending finalization",
-                            new_work_request.request_id
-                        );
-                        // notify the blockchain client to finalize the auction
-                        finalize_auction(new_work_request.request_id, &task_account, &task_client)
+                        // wait for tx to be processed
+                        let temp = finalization_res; //.unwrap();
+                        let inner = temp.inner();
+                        match task_client
+                            .wait_for_transaction_by_hash(
+                                inner.hash.into(),
+                                inner.request.expiration_timestamp_secs.into(),
+                                None,
+                                None,
+                            )
                             .await
-                            .unwrap();
+                        {
+                            Ok(v) => {
+                                let v = v.inner();
+                                match v {
+                                    Transaction::UserTransaction(user_tx) => {
+                                        if user_tx.info.success {
+                                            finalization_successful = true;
+                                        } else {
+                                            curr_try += 1;
+                                        }
+                                    }
+                                    _ => {
+                                        curr_try += 1;
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                curr_try += 1;
+                            }
+                        }
+                    }
+
+                    if finalization_successful {
                         println!("Request {}: Auction finalized", new_work_request.request_id);
-                    });
-                }
-                _ => (),
+                    } else {
+                        println!("Request {}: Auction failed to finalize", new_work_request.request_id);
+                    }
+                });
+            }
+            else {
+                // ignore event 
             }
         }
     });
@@ -449,6 +498,13 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
+            .wrap(
+                Cors::default()
+                    .allow_any_origin()
+                    .allow_any_method()
+                    .allow_any_header()
+                    .max_age(3600), // Optional, caching the preflight response
+            )
             .app_data(app_state.clone())
             .service(request_details)
             .service(request_payload)

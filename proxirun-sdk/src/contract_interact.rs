@@ -13,7 +13,7 @@ use aptos_sdk::{
 
 use crate::constants::CONTRACT_MODULE;
 
-const TIMNEOUT: u64 = 10;
+const TIME_OUT: u64 = 10;
 
 pub async fn bid(
     request_id: u64,
@@ -37,7 +37,7 @@ pub async fn bid(
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
-            + TIMNEOUT,
+            + TIME_OUT,
         ChainId::new(chain_id.chain_id),
     )
     .gas_unit_price(100)
@@ -67,7 +67,7 @@ pub async fn finalize_auction(
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
-            + TIMNEOUT,
+            + TIME_OUT,
         ChainId::new(chain_id.chain_id),
     )
     .gas_unit_price(100)
@@ -97,7 +97,7 @@ pub async fn commit(
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
-            + TIMNEOUT,
+            + TIME_OUT,
         ChainId::new(chain_id.chain_id),
     )
     .gas_unit_price(100)

@@ -22,3 +22,4 @@ postgres-types = "0.2.6"
 tokio-postgres = "0.7.10"
 sqlx = { version = "0.7", features = [ "runtime-tokio", "postgres" ] }
 actix-files = "0.6"
+actix-cors = "0.7.0"

@@ -11,8 +11,9 @@ serde = { workspace=true, features = ["derive"] }
 serde_json = { workspace=true }
 tokio = { workspace=true, features = ["full"] }
 proxirun-sdk = {path="../proxirun-sdk"}
-reqwest = { version = "0.12.0", features = ["json"] }
+reqwest = { version = "0.12.0", features = ["json", "multipart"] }
 aptos-sdk = {workspace=true}
 rand = "0.7.3"
 dotenv = {workspace=true}
-
+openai_api_rust = "0.1.9"
+fal-rust = "0.1.1"

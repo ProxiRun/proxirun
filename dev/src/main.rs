@@ -1,38 +1,48 @@
-use reqwest::{multipart, Client};
-use std::path::Path;
-use tokio::{self, fs};
+use fal_rust::{
+    client::{ClientCredentials, FalClient},
+    utils::download_image,
+};
+use serde::{Deserialize, Serialize};
 
-const FILEPATH: &'static str = "./temp/image.jpg";
+use dotenv::dotenv;
 
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ImageResult {
+    url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Output {
+    images: Vec<ImageResult>,
+}
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Define the file you want to upload
-    let file_content = fs::read(FILEPATH).await?;
-
-    // Create a new HTTP client
-    let client = Client::new();
-
-    let file_part = multipart::Part::bytes(file_content).mime_str("application/octet-stream")?;
+async fn main() {
+    dotenv().ok();
+    let fal_token = std::env::var("FALAI_KEY").expect("FALAI_KEY must be set.");
 
 
-    // Prepare the multipart form, including the file
-    let form = reqwest::multipart::Form::new()
-        .part("file", file_part); 
+    let client = FalClient::new(ClientCredentials::Key(fal_token));
 
-    // Send the file to the Actix server (adjust the URL to match your server)
-    let response = client
-        .post("http://127.0.0.1:8080/submit-image/12") // Upload URL from your Actix server
-        .multipart(form) // Attach the multipart form
-        .send()
-        .await?; // Send the request and await the response
+    let res = client
+        .run(
+            "fal-ai/fast-sdxl",
+            serde_json::json!({
+                "prompt": "A large waterfall in the middle of a volcano, surrounded by lush greenery and children's playground equipment.",
+                "image_size": "landscape_4_3"
 
-    // Check the response from the server
-    if response.status().is_success() {
-        println!("File uploaded successfully!");
-    } else {
-        println!("File upload failed. Status: {}", response.status());
-    }
+            }),
+        )
+        .await
+        .unwrap();
 
-    Ok(())
+    let output: Output = res.json::<Output>().await.unwrap();
+
+    let url = output.images[0].url.clone();
+    let filename = url.split('/').last().unwrap();
+
+    download_image(&url, format!("{}/{}", "temp", filename).as_str())
+        .await
+        .unwrap();
 }
